@@ -12,8 +12,12 @@ def open_pr(gh, repo: str, branch: str, path: str, content: str, title: str, bod
 
 def auto_merge(gh, repo: str, pr: dict, dm: dict) -> dict:
     """Returns {"merged": bool, "status": str, "checks": {...}}."""
-    status, checks = gh.wait_for_checks(repo, pr["head"]["sha"], dm["required_checks"],
-                                        timeout_s=int(dm.get("checks_timeout_minutes", 15)) * 60)
+    try:
+        status, checks = gh.wait_for_checks(repo, pr["head"]["sha"], dm["required_checks"],
+                                            timeout_s=int(dm.get("checks_timeout_minutes", 15)) * 60)
+    except RuntimeError as e:
+        # Typically 403: the GitHub App lacks the "Checks: Read" permission.
+        status, checks = "unreadable (does the GitHub App have Checks: Read?)", {"error": str(e)[:200]}
     if status != "success":
         gh.comment(repo, pr["number"],
                    f"vuln-sentinel: auto-merge **cancelled** — required checks {status}: `{checks}`.\n"
