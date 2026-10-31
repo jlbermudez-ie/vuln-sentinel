@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from . import cve_sources, matcher, prompts, remediation
+from . import cve_sources, decision, matcher, notify, prompts, remediation, ship
 from .llm import LLMError, make_llm
 from .report import render
 from .techstack import load_repos
@@ -91,8 +91,20 @@ def try_code_fix(cve, repo, finding, llm, gh, dry_run) -> dict:
 
 def mitigate(cve, service, finding, infra, llm, gh, cfg, dry_run) -> dict:
     waf = json.loads((infra.path / remediation.WAF_FILE).read_text())
+    cited = [r["name"] for r in waf.get("managed_rule_groups", []) + waf.get("custom_rules", [])
+             if cve["id"] in (r.get("reason") or "")]
+    if cited:
+        # Idempotency: an earlier run already mitigated this CVE. Re-runs must not keep
+        # stacking controls (seen in the lab: a third PR piling on a rate limit).
+        return {"infra_repo": infra.full_name, "options": [], "chosen": None,
+                "action": f"already mitigated by {', '.join(cited)} (no new PR)"}
     ans = llm.json("mitigation", prompts.MITIGATION_SYSTEM,
                    prompts.mitigation_user(cve, service, finding, infra.stack, waf))
+    for o in ans.get("options", []):     # tag every proposed rule with the CVE (code, not the model)
+        ch = o.get("changes") or {}
+        for r in (ch.get("add_managed_rule_groups") or []) + (ch.get("add_custom_rules") or []):
+            if cve["id"] not in (r.get("reason") or ""):
+                r["reason"] = f"{cve['id']}: {r.get('reason') or 'mitigation'}"
     evaluated = [remediation.evaluate_option(o, infra.path, cfg["policy"]) for o in ans.get("options", [])]
     chosen = remediation.choose(evaluated, ans.get("recommended"))
     result = {"infra_repo": infra.full_name, "options": evaluated, "recommended": ans.get("recommended"),
@@ -114,21 +126,58 @@ def mitigate(cve, service, finding, infra, llm, gh, cfg, dry_run) -> dict:
             chosen["change_summary"] = chosen["change_summary"] + [s + " — lab instrumentation" for s in extra]
             chosen["computed_cost_usd_month"] += added * cfg["policy"]["cost_usd_month"].get("waf_rule", 1.0)
 
+    # ---- decision matrix: how much autonomy this change gets (all inputs computed by code)
+    dm = cfg["decision_matrix"]
+    dec = decision.decide(finding["cvss"], chosen, waf, dm, in_kev=finding.get("kev", False))
+    result["decision"] = dec
+    tier = dec["tier"]
+    rules = chosen["new_waf_rules"]
+    if tier == "auto":
+        rules, notes = decision.stage_for_auto(rules, waf, dm)
+        chosen["change_summary"] = chosen["change_summary"] + notes
+    content = json.dumps(rules, indent=2) + "\n"
     branch = f"sentinel/{cve['id'].lower()}-waf"
-    content = json.dumps(chosen["new_waf_rules"], indent=2) + "\n"
+    head = f"{cve['id']} → {service} · {dec['severity']} · impact {dec['impact']} · cost {dec['cost_tier']} → *{tier}*"
+    lines = [head, f"Change: {'; '.join(chosen['change_summary'])}",
+             f"Fixed upstream in: {finding.get('fixed_in') or 'unknown'}", dec.get("note")]
+
+    if tier == "report":
+        result["action"] = "escalated: no PR (risk too high for automation)"
+        notify.slack("report", f"Human decision needed: {cve['id']}", lines + [
+            "Best option exceeds the automation limits; see the run summary for all options."], dry_run=dry_run)
+        return result
     if dry_run:
-        result["action"] = f"dry-run: would open PR on {infra.full_name} branch {branch}"
+        result["action"] = f"dry-run: tier {tier} — would open PR on {infra.full_name} branch {branch}"
         result["proposed_file"] = content
+        notify.slack(tier, f"[dry-run] {cve['id']} mitigation ({tier})", lines, dry_run=True)
         return result
     if gh.open_pr_for(infra.full_name, branch):
         result["action"] = "skipped: PR already open"
         return result
+
     from .report import pr_body
-    pr = gh.create_pr(infra.full_name, branch, {remediation.WAF_FILE: content},
-                      f"security: {chosen['type']} WAF mitigation for {cve['id']} ({service})",
-                      pr_body(cve, service, finding, result, chosen), ["vuln-sentinel", "security", chosen["type"]])
-    result["action"] = "pr-opened"
+    title = f"security: {chosen['type']} WAF mitigation for {cve['id']} ({service})"
+    if tier == "auto":
+        title += f" {ship.AUTO_MARKER}"
+    pr = ship.open_pr(gh, infra.full_name, branch, remediation.WAF_FILE, content, title,
+                      pr_body(cve, service, finding, result, chosen),
+                      ["vuln-sentinel", "security", chosen["type"], f"tier:{tier}"])
     result["url"] = pr["html_url"]
+    if tier == "auto":
+        res = ship.auto_merge(gh, infra.full_name, pr, dm)
+        result["auto_merge"] = res
+        if res["merged"]:
+            result["action"] = "auto-merged (staged in COUNT, promotion pending)"
+            notify.slack("auto", f"Auto-mitigated {cve['id']} on {service}", lines + [
+                "Merged by the bot; apply runs in the `auto` environment.",
+                "Rules start in COUNT and are promoted to BLOCK by the promotion job."], url=pr["html_url"])
+            return result
+        tier = "approve"
+        result["decision"]["tier"] = "approve"
+        result["decision"]["note"] = f"auto-merge cancelled: checks {res['status']}"
+        lines.append(f"Auto-merge cancelled: required checks {res['status']}")
+    result["action"] = "pr-opened (awaiting human approval)"
+    notify.slack("approve", f"Approval needed: {cve['id']} mitigation PR", lines, url=pr["html_url"])
     return result
 
 
@@ -166,6 +215,7 @@ def main(argv=None) -> int:
                 continue
             log(f"* {cve['id']} affects {repo.name} ({hit['component']} {hit['version']}) via {hit['method']}")
             f = {"cve": cve["id"], "cvss": score, "severity": sev, "service": repo.name,
+                 "kev": bool(cve.get("cisaExploitAdd")),
                  "description": cve_sources.description(cve), **hit}
             ev = hit.get("evidence") or {}
             f["fixed_in"] = ev.get("versionEndExcluding") or ", ".join(ev.get("fixed_versions") or []) or None

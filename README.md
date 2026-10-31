@@ -22,6 +22,25 @@ NVD 2.0 / CISA KEV / manual / repository_dispatch
  PR to orders-infra (security/waf-rules.json only) ──► terraform plan comment ──► human review ──► apply
 ```
 
+## Decision matrix (how much autonomy the bot gets)
+
+| Severity (CVSS, or CISA KEV) | worst(impact, cost) | Tier | What happens |
+|---|---|---|---|
+| High / Critical | low | **auto** | PR → required checks → bot squash-merges `[sentinel-auto]` → apply in env `auto`; new groups start in **COUNT** and `promote.yml` flips them to **BLOCK** |
+| High / Critical | medium | **approve** | PR + Slack; a human approves (env `production`) |
+| High / Critical | high | **report** | No PR; Slack escalation + tracking issue |
+| Medium / Low | low–medium | approve | Never auto |
+
+Impact and cost are **computed by code**: only allow-listed AWS managed groups count as low impact;
+custom rules and rate limits are medium; manual changes are high. Cost tiers come from `sentinel.yml`.
+The model's own labels are displayed but never used (it once called a never-firing rule "low impact").
+
+**Observe, then block** (`python -m sentinel.promote`, every 30 min): after `observe_minutes` in COUNT, a group is
+promoted only if ≤ `max_count_ratio` of requests matched; during `watch_minutes` it is rolled back to COUNT if it
+blocks more than `max_block_ratio`. Every decision is posted to Slack and shipped as an auto-merged PR.
+
+**Idempotency:** if a rule in `waf-rules.json` already cites the CVE, the scanner reports "already mitigated" and stops.
+
 ## Run locally
 
 ```bash
@@ -48,6 +67,8 @@ OPENROUTER_API_KEY=... python -m sentinel --root <dir-with-repos/> --cve CVE-202
 | `SENTINEL_APP_ID` | variable | GitHub App id |
 | `SENTINEL_APP_PRIVATE_KEY` | secret | GitHub App private key (.pem contents) |
 | `NVD_API_KEY` | secret (optional) | Higher NVD rate limits |
+| `SLACK_WEBHOOK_URL` | secret | Slack Incoming Webhook for notifications |
+| `SENTINEL_METRICS_ROLE_ARN` | variable | Read-only CloudWatch role (bootstrap output `metrics_role_arn`) |
 
 ## Safety design
 - CVE text and repo files are fenced as untrusted; the model output is never written directly.

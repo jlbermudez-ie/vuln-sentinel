@@ -1,0 +1,74 @@
+name: promote
+
+# Observe-then-block for decision-matrix "auto" mitigations:
+# COUNT -> BLOCK after the observation window if little legitimate traffic would be blocked,
+# then a watch window with automatic rollback to COUNT if blocks spike. Slack on every decision.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Decide and notify only, no PR"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write          # read-only CloudWatch role via OIDC
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mint GitHub App token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.SENTINEL_APP_ID }}
+          private-key: ${{ secrets.SENTINEL_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: orders-infra
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/orders-infra
+          token: ${{ steps.app.outputs.token }}
+          path: repos/orders-infra
+          persist-credentials: false
+
+      - name: Anything staged or watched?
+        id: pending
+        run: |
+          n=$(python3 -c "import json;d=json.load(open('repos/orders-infra/security/waf-rules.json'));print(sum(1 for g in d['managed_rule_groups'] if g.get('staged') or g.get('watch')))")
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "groups in COUNT-staging or watch: $n"
+
+      - uses: actions/setup-python@v5
+        if: steps.pending.outputs.count != '0'
+        with:
+          python-version: "3.12"
+          cache: pip
+      - if: steps.pending.outputs.count != '0'
+        run: pip install -r requirements.txt
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.pending.outputs.count != '0'
+        with:
+          role-to-assume: ${{ vars.SENTINEL_METRICS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Promote / roll back
+        if: steps.pending.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          DRY: ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: python -m sentinel.promote --infra repos/orders-infra $DRY

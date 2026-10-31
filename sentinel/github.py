@@ -46,6 +46,9 @@ class GitHub:
         except RuntimeError as e:
             if "Reference already exists" not in str(e):
                 raise
+            # Callers check there is no OPEN PR for this branch first, so a leftover branch
+            # belongs to a merged/closed PR: reset it to the base branch, never build on it.
+            self._r("PATCH", f"/repos/{repo}/git/refs/heads/{branch}", json={"sha": sha, "force": True})
         for path, content in files.items():
             cur = self.s.get(f"{API}/repos/{repo}/contents/{path}", params={"ref": branch}, timeout=60)
             payload = {"message": f"{title}\n\n[vuln-sentinel]", "branch": branch,
@@ -57,6 +60,30 @@ class GitHub:
         if labels:
             self._r("POST", f"/repos/{repo}/issues/{pr['number']}/labels", json={"labels": labels})
         return pr
+
+    def wait_for_checks(self, repo: str, sha: str, required: list[str], timeout_s: int = 900,
+                        poll_s: int = 20) -> tuple[str, dict]:
+        """Wait until every required check run on `sha` completes.
+        Returns ("success" | "failure" | "timeout", {check name: conclusion})."""
+        import time
+        deadline = time.time() + timeout_s
+        seen: dict = {}
+        while time.time() < deadline:
+            runs = self._r("GET", f"/repos/{repo}/commits/{sha}/check-runs", params={"per_page": 100})
+            seen = {r["name"]: (r["status"], r.get("conclusion")) for r in runs.get("check_runs", [])}
+            if all(n in seen and seen[n][0] == "completed" for n in required):
+                ok = all(seen[n][1] == "success" for n in required)
+                return ("success" if ok else "failure"), {n: seen[n][1] for n in required}
+            time.sleep(poll_s)
+        return "timeout", {n: (seen.get(n) or ("missing",))[0] for n in required}
+
+    def merge_pr(self, repo: str, number: int, title: str) -> dict:
+        # Squash so the commit on main carries the [sentinel-auto] marker the apply workflow checks.
+        return self._r("PUT", f"/repos/{repo}/pulls/{number}/merge",
+                       json={"merge_method": "squash", "commit_title": title})
+
+    def comment(self, repo: str, number: int, body: str) -> dict:
+        return self._r("POST", f"/repos/{repo}/issues/{number}/comments", json={"body": body})
 
     def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> dict:
         return self._r("POST", f"/repos/{repo}/issues", json={"title": title, "body": body, "labels": labels})

@@ -22,6 +22,11 @@ def render(findings: list[dict]) -> str:
                 f"- Fixed upstream in: **{f.get('fixed_in') or 'unknown'}** (from NVD)",
                 f"- Code fix: **{f['code_fix']['status']}** — {f['code_fix'].get('reason', f['code_fix'].get('url', ''))}"]
         for m in f["mitigations"]:
+            d = m.get("decision")
+            if d:
+                out.append(f"- Decision: severity **{d['severity']}**{' (KEV)' if d.get('kev') else ''} · "
+                           f"impact **{d['impact']}** · cost **{d['cost_tier']}** → tier **{d['tier']}**"
+                           + (f" — {d['note']}" if d.get('note') else ""))
             out += [f"- Infra `{m['infra_repo']}`: **{m.get('action')}** {m.get('url', '')}", ""]
             if m.get("options"):
                 out += [_opt_table(m["options"]), ""]
@@ -31,12 +36,25 @@ def render(findings: list[dict]) -> str:
     return "\n".join(out)
 
 
+def _decision_block(d: dict | None) -> str:
+    if not d:
+        return ""
+    why = "; ".join(d.get("impact_why", []))
+    action = {"auto": "auto-merge after required checks; rules staged in COUNT, promoted to BLOCK by the promotion job",
+              "approve": "a human reviews and approves", "report": "no PR"}[d["tier"]]
+    return (f"### Decision matrix → tier `{d['tier']}`\n"
+            f"| Severity | Impact (computed) | Cost tier | Action |\n|---|---|---|---|\n"
+            f"| {d['severity']}{' (KEV)' if d.get('kev') else ''} | {d['impact']} — {why} | {d['cost_tier']} | {action} |")
+
+
 def pr_body(cve: dict, service: str, finding: dict, result: dict, chosen: dict) -> str:
     changes = "\n".join(f"- {s}" for s in chosen["change_summary"])
     return f"""## 🛡️ {chosen['type'].title()} mitigation for {cve['id']}
 
 **Service:** `{service}` · **Component:** `{finding['component']} {finding['version']}` · **CVSS:** {finding['cvss']}
 **Fixed upstream in:** `{finding.get('fixed_in') or 'unknown'}` (NVD) · **Why not a code fix?** {finding['code_fix'].get('reason', finding['code_fix']['status'])}
+
+{_decision_block(result.get("decision"))}
 
 ### Change (`security/waf-rules.json` only)
 {changes}
