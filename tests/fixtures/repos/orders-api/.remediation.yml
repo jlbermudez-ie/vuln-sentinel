@@ -1,0 +1,13 @@
+# Read by vuln-sentinel before it attempts any automatic code fix.
+# This is the "blocker" in the lab scenario.
+auto_fix: false
+reason: >-
+  Critical app under change freeze. Any change to code or PHP runtime requires
+  a full regression cycle (~4 weeks). Mitigate at the edge (ALB / AWS WAF) and
+  open a tracking issue for the permanent fix.
+contacts:
+  - "@platform-team"
+# Paths the bot may touch if auto_fix is ever enabled.
+allowed_paths:
+  - composer.json
+  - composer.lock

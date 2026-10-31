@@ -1,0 +1,16 @@
+{
+  "_comment": "Data file for terraform/waf.tf. vuln-sentinel may only edit this file. Validated by security/waf-rules.schema.json.",
+  "default_action": "allow",
+  "managed_rule_groups": [
+    {
+      "name": "AWSManagedRulesCommonRuleSet",
+      "priority": 20,
+      "mode": "block",
+      "version": null,
+      "rule_overrides_to_count": [],
+      "reason": "Baseline OWASP protection"
+    }
+  ],
+  "custom_rules": [],
+  "rate_limit": null
+}
