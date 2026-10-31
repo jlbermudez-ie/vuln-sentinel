@@ -90,6 +90,9 @@ def try_code_fix(cve, repo, finding, llm, gh, dry_run) -> dict:
 
 
 def mitigate(cve, service, finding, infra, llm, gh, cfg, dry_run) -> dict:
+    if getattr(infra, "pending_pr", None):
+        return {"infra_repo": infra.full_name, "options": [], "chosen": None,
+                "action": f"deferred: {infra.pending_pr} on the same file awaits approval; re-run after it is merged"}
     waf = json.loads((infra.path / remediation.WAF_FILE).read_text())
     cited = [r["name"] for r in waf.get("managed_rule_groups", []) + waf.get("custom_rules", [])
              if cve["id"] in (r.get("reason") or "")]
@@ -167,6 +170,9 @@ def mitigate(cve, service, finding, infra, llm, gh, cfg, dry_run) -> dict:
         res = ship.auto_merge(gh, infra.full_name, pr, dm)
         result["auto_merge"] = res
         if res["merged"]:
+            # Later CVEs in this run must build on what is now on main, not on the stale checkout,
+            # or their PR would overwrite these rules.
+            (infra.path / remediation.WAF_FILE).write_text(content)
             result["action"] = "auto-merged (staged in COUNT, promotion pending)"
             notify.slack("auto", f"Auto-mitigated {cve['id']} on {service}", lines + [
                 "Merged by the bot; apply runs in the `auto` environment.",
@@ -177,6 +183,7 @@ def mitigate(cve, service, finding, infra, llm, gh, cfg, dry_run) -> dict:
         result["decision"]["note"] = f"auto-merge cancelled: checks {res['status']}"
         lines.append(f"Auto-merge cancelled: required checks {res['status']}")
     result["action"] = "pr-opened (awaiting human approval)"
+    infra.pending_pr = pr["html_url"]   # other CVEs in this run must not open a competing PR
     notify.slack("approve", f"Approval needed: {cve['id']} mitigation PR", lines, url=pr["html_url"])
     return result
 
