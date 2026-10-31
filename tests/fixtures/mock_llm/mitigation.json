@@ -1,0 +1,63 @@
+{
+  "options": [
+    {
+      "id": "waf-php-ruleset",
+      "title": "Enable AWS managed PHP + Known Bad Inputs rule groups on the ALB web ACL",
+      "type": "temporary",
+      "impact": "low",
+      "effort": "low",
+      "surface": "waf-managed-rule-group",
+      "changes": {
+        "add_managed_rule_groups": [
+          {"name": "AWSManagedRulesPHPRuleSet", "mode": "block", "reason": "AWS PHP rule group (default version includes PHP2Shell signatures)"},
+          {"name": "AWSManagedRulesKnownBadInputsRuleSet", "mode": "block", "reason": "Generic RCE/exploit-pattern coverage"}
+        ]
+      },
+      "llm_cost_estimate_usd_month": 2,
+      "rationale": "Blocks published exploit request patterns at the edge before PHP parses the request; no app change.",
+      "residual_risk": "Signature-based; novel exploit variants may bypass. PHP runtime remains vulnerable.",
+      "rollback": "Revert the PR or set mode to count."
+    },
+    {
+      "id": "rate-limit",
+      "title": "Per-IP rate limit to slow exploit attempts",
+      "type": "temporary",
+      "impact": "medium",
+      "effort": "low",
+      "surface": "waf-rate-limit",
+      "changes": {"set_rate_limit": {"limit": 1000, "action": "block"}},
+      "llm_cost_estimate_usd_month": 1,
+      "rationale": "Raises attacker cost; may affect bursty legitimate clients.",
+      "residual_risk": "Single-request exploits are not stopped.",
+      "rollback": "Set rate_limit to null."
+    },
+    {
+      "id": "upgrade-runtime",
+      "title": "Move the Lambda to a Bref layer with PHP 8.3.36+",
+      "type": "permanent",
+      "impact": "high",
+      "effort": "high",
+      "surface": "manual",
+      "changes": {},
+      "llm_cost_estimate_usd_month": 0,
+      "rationale": "Removes the vulnerability.",
+      "residual_risk": "None for this CVE.",
+      "rollback": "Pin previous layer version."
+    },
+    {
+      "id": "sneaky",
+      "title": "Model output that tries to slip in an unapproved rule group",
+      "type": "temporary",
+      "impact": "low",
+      "effort": "low",
+      "surface": "waf-managed-rule-group",
+      "changes": {"add_managed_rule_groups": [{"name": "SomeVendorMarketplaceGroup", "mode": "block", "reason": "x"}]},
+      "llm_cost_estimate_usd_month": 0,
+      "rationale": "Should be rejected by the schema gate.",
+      "residual_risk": "-",
+      "rollback": "-"
+    }
+  ],
+  "recommended": "waf-php-ruleset",
+  "permanent_fix": "Upgrade the PHP runtime (Bref layer) to 8.3.36 or later after regression testing, then the WAF rules can stay as defence-in-depth."
+}

@@ -1,0 +1,87 @@
+name: sentinel
+
+on:
+  schedule:
+    - cron: "17 13 * * *"            # daily 07:17 Mexico City: NVD window + CISA KEV sweep
+  workflow_dispatch:                 # manual, optionally for one CVE
+    inputs:
+      cve_id:
+        description: "CVE id(s), comma-separated (empty = full sweep)"
+        required: false
+      dry_run:
+        description: "Report only — no PRs or issues"
+        type: boolean
+        default: false
+  repository_dispatch:               # CVE-triggered from any feed/webhook
+    types: [cve-alert]               # payload: {"cve_id": "CVE-2026-109618"}
+
+permissions:
+  contents: read                     # this repo only; cross-repo access uses the GitHub App token
+
+concurrency:
+  group: sentinel
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mint short-lived GitHub App token (scoped to the two target repos)
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.SENTINEL_APP_ID }}
+          private-key: ${{ secrets.SENTINEL_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: orders-api,orders-infra
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/orders-api
+          token: ${{ steps.app.outputs.token }}
+          path: repos/orders-api
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/orders-infra
+          token: ${{ steps.app.outputs.token }}
+          path: repos/orders-infra
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Run vuln-sentinel
+        env:
+          CVE_INPUT: ${{ inputs.cve_id || github.event.client_payload.cve_id }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${CVE_INPUT}" ]; then
+            # never pass untrusted dispatch payloads to the shell unvalidated
+            if ! [[ "${CVE_INPUT}" =~ ^CVE-[0-9]{4}-[0-9]{4,}(,CVE-[0-9]{4}-[0-9]{4,})*$ ]]; then
+              echo "::error::invalid CVE id list"; exit 1
+            fi
+            args+=(--cve "${CVE_INPUT}")
+          fi
+          [ -n "${DRY_RUN}" ] && args+=(--dry-run)
+          sed -i "s#YOUR_ORG#${GITHUB_REPOSITORY_OWNER}#g" sentinel.yml
+          python -m sentinel "${args[@]}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sentinel-report-${{ github.run_id }}
+          path: out/
+          retention-days: 30

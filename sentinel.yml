@@ -1,0 +1,52 @@
+# vuln-sentinel configuration
+llm:
+  base_url: https://openrouter.ai/api/v1
+  # Any OpenRouter model id that follows instructions and returns JSON well.
+  # Check https://openrouter.ai/models for current ids/prices.
+  model: anthropic/claude-sonnet-4.5
+  temperature: 0
+  max_tokens: 4000
+  # Below this confidence an LLM "affected" verdict is reported but not acted on.
+  min_confidence: 0.7
+  # Hard spend guard: the run stops calling the model after this many requests.
+  max_calls_per_run: 8
+
+cve_sources:
+  nvd:
+    enabled: true
+    lookback_hours: 26        # daily cron + 2h overlap
+  kev:
+    enabled: true             # CISA Known Exploited Vulnerabilities catalog
+    lookback_days: 3
+
+repos:
+  - name: orders-api
+    full_name: jlbermudez-ie/orders-api
+    path: repos/orders-api
+    kind: code
+  - name: orders-infra
+    full_name: jlbermudez-ie/orders-infra
+    path: repos/orders-infra
+    kind: infra
+    serves: [orders-api]
+
+policy:
+  min_cvss: 7.0               # ignore CVEs below this score
+  auto_pr:                    # a mitigation must pass ALL of these to become a PR
+    max_monthly_cost_usd: 25
+    max_impact: medium        # risk of breaking legitimate traffic: low|medium|high
+    max_effort: low
+    allowed_types: [temporary, permanent]
+  # Deterministic cost model. The LLM's own cost guess is shown but never trusted.
+  # Approximate AWS WAF list prices — verify on the AWS WAF pricing page.
+  cost_usd_month:
+    waf_rule: 1.0             # each rule or AWS-managed (free tier) rule group
+    rate_limit_rule: 1.0
+  open_tracking_issue: true   # permanent-fix issue in the code repo when code fix is blocked
+
+# Lab only: the scanner (code, not the model) appends a harmless header-match rule to
+# every WAF mitigation so scripts/smoke-test.sh can prove the WAF is in front of PHP.
+# Remove this block outside the lab.
+lab:
+  canary_header: x-lab-canary
+  canary_value: php2shell-sim

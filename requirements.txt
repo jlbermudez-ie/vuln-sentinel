@@ -1,0 +1,5 @@
+requests>=2.32
+PyYAML>=6.0
+packaging>=24.0
+jsonschema>=4.22
+pytest>=8.0

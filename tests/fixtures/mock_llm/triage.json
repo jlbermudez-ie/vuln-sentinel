@@ -1,0 +1,7 @@
+{
+  "affected": true,
+  "component": "php",
+  "confidence": 0.92,
+  "fixed_versions": ["8.2.35", "8.3.36", "8.4.27", "8.5.12"],
+  "rationale": "Description covers PHP 5.4-8.5; declared php 8.3.30 is below the 8.3.36 fix."
+}
