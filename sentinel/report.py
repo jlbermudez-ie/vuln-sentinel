@@ -19,6 +19,7 @@ def render(findings: list[dict]) -> str:
     for f in findings:
         out += [f"### {f['cve']} → `{f['service']}` (CVSS {f['cvss']} {f['severity']})",
                 f"- Component: `{f['component']} {f['version']}` (matched via **{f['method']}**, confidence {f['confidence']})",
+                f"- Fixed upstream in: **{f.get('fixed_in') or 'unknown'}** (from NVD)",
                 f"- Code fix: **{f['code_fix']['status']}** — {f['code_fix'].get('reason', f['code_fix'].get('url', ''))}"]
         for m in f["mitigations"]:
             out += [f"- Infra `{m['infra_repo']}`: **{m.get('action')}** {m.get('url', '')}", ""]
@@ -35,7 +36,7 @@ def pr_body(cve: dict, service: str, finding: dict, result: dict, chosen: dict) 
     return f"""## 🛡️ {chosen['type'].title()} mitigation for {cve['id']}
 
 **Service:** `{service}` · **Component:** `{finding['component']} {finding['version']}` · **CVSS:** {finding['cvss']}
-**Why not a code fix?** {finding['code_fix'].get('reason', finding['code_fix']['status'])}
+**Fixed upstream in:** `{finding.get('fixed_in') or 'unknown'}` (NVD) · **Why not a code fix?** {finding['code_fix'].get('reason', finding['code_fix']['status'])}
 
 ### Change (`security/waf-rules.json` only)
 {changes}

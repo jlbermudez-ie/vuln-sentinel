@@ -27,6 +27,9 @@ code cannot be changed right now. Propose 2-4 infrastructure mitigations using O
 mitigation surfaces listed for the infra repo. Prefer the least risky option that
 meaningfully reduces exploitability. Be honest about residual risk: an edge control
 is defence-in-depth, not a fix.
+Count mode only logs and does NOT mitigate; rate limits do not stop single-request exploits.
+For critical or exploited CVEs, at least one option must BLOCK (managed group mode "block").
+Use the "Fixed upstream in" version given below verbatim; never guess version numbers.
 {GUARD}
 Schema:
 {{"options": [{{
@@ -51,7 +54,8 @@ Schema:
 def mitigation_user(cve: dict, service: str, finding: dict, infra_stack: dict, waf_rules: dict) -> str:
     return (
         f"CVE: {cve['id']} (CVSS {finding['cvss']})\n<untrusted>\n{finding['description']}\n</untrusted>\n"
-        f"Affected service: {service}; component: {finding['component']}\n"
+        f"Affected service: {service}; component: {finding['component']} {finding.get('version', '')}\n"
+        f"Fixed upstream in (from NVD, authoritative): {finding.get('fixed_in') or 'unknown'}\n"
         f"Code fix status: {finding['code_fix']['status']} — {finding['code_fix'].get('reason', '')}\n"
         f"Infra techstack:\n<untrusted>\n{json.dumps(infra_stack, indent=1)}\n</untrusted>\n"
         f"Current security/waf-rules.json:\n<untrusted>\n{json.dumps(waf_rules, indent=1)}\n</untrusted>"

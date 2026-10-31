@@ -37,6 +37,7 @@ policy:
     max_impact: medium        # risk of breaking legitimate traffic: low|medium|high
     max_effort: low
     allowed_types: [temporary, permanent]
+    require_blocking_control: true   # count-mode / rate-limit-only options never become PRs
   # Deterministic cost model. The LLM's own cost guess is shown but never trusted.
   # Approximate AWS WAF list prices — verify on the AWS WAF pricing page.
   cost_usd_month:

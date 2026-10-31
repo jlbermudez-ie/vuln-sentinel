@@ -87,6 +87,11 @@ def validate_waf(rules: dict, schema: dict) -> list[str]:
 
 
 # ---------------------------------------------------------------- policy gate
+def _adds_blocking(changes: dict) -> bool:
+    return any(g.get("mode") == "block" for g in changes.get("add_managed_rule_groups") or []) or \
+        any(r.get("action") == "block" for r in changes.get("add_custom_rules") or [])
+
+
 def evaluate_option(opt: dict, infra_path: Path, policy: dict) -> dict:
     """Attach cost, diff, validation and gate verdict to one LLM option."""
     res = {**opt, "gate": {"passed": False, "reasons": []}}
@@ -116,6 +121,9 @@ def evaluate_option(opt: dict, infra_path: Path, policy: dict) -> dict:
         reasons.append(f"effort {opt.get('effort')} > {ap['max_effort']}")
     if opt.get("type") not in ap["allowed_types"]:
         reasons.append(f"type {opt.get('type')} not allowed")
+    if ap.get("require_blocking_control", True) and not _adds_blocking(opt.get("changes") or {}):
+        # count mode only logs, and rate limits can't stop a single-request exploit
+        reasons.append("no blocking control (count-mode / rate-limit only)")
     res["gate"]["passed"] = not reasons
     return res
 

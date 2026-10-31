@@ -69,3 +69,27 @@ def test_end_to_end_dry_run(tmp_path):
         schema = json.loads((root / "repos/orders-infra/security/waf-rules.schema.json").read_text())
         assert remediation.validate_waf(new, schema) == []
     assert "waf-php-ruleset" in (out / "report.md").read_text()
+
+
+def test_gate_rejects_count_mode_and_rate_limit_only():
+    """Real-model regression: 'rate limiting + PHP rule set (count mode)' must not pass."""
+    infra = FIX / "repos/orders-infra"
+    weak = {"id": "opt-1", "title": "rate limit + PHP count", "type": "temporary", "impact": "low",
+            "effort": "low", "surface": "waf-rate-limit",
+            "changes": {"add_managed_rule_groups": [{"name": "AWSManagedRulesPHPRuleSet", "mode": "count",
+                                                     "reason": "observe first"}],
+                        "set_rate_limit": {"limit": 1000, "action": "block"}}}
+    res = remediation.evaluate_option(weak, infra, CFG["policy"])
+    assert not res["gate"]["passed"]
+    assert any("no blocking control" in r for r in res["gate"]["reasons"])
+
+
+def test_fixed_version_comes_from_nvd(tmp_path):
+    root = _setup(tmp_path)
+    out = tmp_path / "out"
+    main(["--config", str(root / "sentinel.yml"), "--root", str(root), "--cve", "CVE-2026-109618",
+          "--dry-run", "--offline", str(FIX), "--mock-llm", str(FIX / "mock_llm"), "--out", str(out)])
+    f = json.loads((out / "report.json").read_text())[0]
+    assert f["fixed_in"] == "8.3.36"
+    assert "8.3.36" in (out / "report.md").read_text()
+    assert f["mitigations"][0]["action"].endswith("sentinel/cve-2026-109618-waf")

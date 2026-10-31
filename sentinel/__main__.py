@@ -114,7 +114,7 @@ def mitigate(cve, service, finding, infra, llm, gh, cfg, dry_run) -> dict:
             chosen["change_summary"] = chosen["change_summary"] + [s + " — lab instrumentation" for s in extra]
             chosen["computed_cost_usd_month"] += added * cfg["policy"]["cost_usd_month"].get("waf_rule", 1.0)
 
-    branch = f"sentinel/{cve['id'].lower()}-{chosen['surface']}"
+    branch = f"sentinel/{cve['id'].lower()}-waf"
     content = json.dumps(chosen["new_waf_rules"], indent=2) + "\n"
     if dry_run:
         result["action"] = f"dry-run: would open PR on {infra.full_name} branch {branch}"
@@ -167,6 +167,8 @@ def main(argv=None) -> int:
             log(f"* {cve['id']} affects {repo.name} ({hit['component']} {hit['version']}) via {hit['method']}")
             f = {"cve": cve["id"], "cvss": score, "severity": sev, "service": repo.name,
                  "description": cve_sources.description(cve), **hit}
+            ev = hit.get("evidence") or {}
+            f["fixed_in"] = ev.get("versionEndExcluding") or ", ".join(ev.get("fixed_versions") or []) or None
             f["code_fix"] = try_code_fix(cve, repo, f, llm, gh, args.dry_run)
             f["mitigations"] = []
             if f["code_fix"]["status"] != "pr-opened":
@@ -180,6 +182,8 @@ def main(argv=None) -> int:
                 title = f"[{cve['id']}] permanent fix needed for {hit['component']} {hit['version']}"
                 if not gh.find_issue(repo.full_name, title):
                     pf = next((m.get("permanent_fix") for m in f["mitigations"] if m.get("permanent_fix")), "")
+                    if f.get("fixed_in"):
+                        pf = f"Upgrade {hit['component']} to {f['fixed_in']} or later (per NVD). {pf}"
                     links = "\n".join(f"- Mitigation: {m['url']}" for m in f["mitigations"] if m.get("url"))
                     gh.create_issue(repo.full_name, title,
                                     f"{f['description']}\n\n**Automatic fix blocked:** {f['code_fix']['reason']}\n\n"
